@@ -1,3 +1,4 @@
+use std::env;
 use std::borrow::Cow;
 
 #[cfg(feature = "wayland-data-control")]
@@ -67,6 +68,52 @@ pub enum LinuxClipboardKind {
 	Secondary,
 }
 
+const XWAYLAND: &str = "Xwayland";
+const IBUS_DAEMON: &str = "ibus-daemon";
+const PLASMA_KDED5: &str = "kded5";
+const GNOME_GOA_DAEMON: &str = "goa-daemon";
+const RUSTDESK_TRAY: &str = "rustdesk +--tray";
+
+fn get_env(name: &str, uid: &str, process: &str) -> String {
+	let cmd = format!("ps -u {} -f | grep -E '{}' | grep -v 'grep' | tail -1 | awk '{{print $2}}' | xargs -I__ cat /proc/__/environ 2>/dev/null | tr '\\0' '\\n' | grep '^{}=' | tail -1 | sed 's/{}=//g'", uid, process, name, name);
+	if let Ok(x) = run_cmds(&cmd) {
+			x.trim_end().to_string()
+	} else {
+			"".to_owned()
+	}
+}
+
+fn run_cmds(cmds: &str) -> Result<String, std::io::Error> {
+	let output = std::process::Command::new("sh")
+			.args(vec!["-c", cmds])
+			.output()?;
+	Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+
+fn set_env(xdg_dir: String) {
+	let parts: Vec<&str> = xdg_dir.split('/').collect();
+	if let Some(uid) = parts.last() {
+		let mut wl_display = "".to_string();
+		for _ in 0..5 {
+			let display_proc = vec![
+					XWAYLAND,
+					IBUS_DAEMON,
+					GNOME_GOA_DAEMON,
+					PLASMA_KDED5,
+					RUSTDESK_TRAY,
+			];
+			for proc in display_proc {
+				wl_display = get_env("WAYLAND_DISPLAY", uid, proc);
+			}
+			if !wl_display.is_empty() {
+				env::set_var("WAYLAND_DISPLAY", wl_display);
+				break;
+			}
+		}
+	} 
+}
+
 pub(crate) enum Clipboard {
 	X11(x11::Clipboard),
 
@@ -78,6 +125,14 @@ impl Clipboard {
 	pub(crate) fn new() -> Result<Self, Error> {
 		#[cfg(feature = "wayland-data-control")]
 		{
+			for (key, value) in env::vars() {
+				if key == "XDG_RUNTIME_DIR" {
+					if !value.is_empty() {
+						set_env(value);
+					}
+				}
+			}
+					
 			if std::env::var_os("WAYLAND_DISPLAY").is_some() {
 				// Wayland is available
 				match wayland::Clipboard::new() {
